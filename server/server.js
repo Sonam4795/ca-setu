@@ -31,7 +31,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+      // Allow requests with no origin (e.g. mobile apps, curl, same-origin, server-to-server)
       if (!origin) return callback(null, true);
       if (
         allowedOrigins.length === 0 ||
@@ -41,14 +41,30 @@ app.use(
       ) {
         return callback(null, true);
       }
-      return callback(null, true); // Allow during deployment transition
+      return callback(null, true); // Permissive for production deployment
     },
     credentials: true,
   })
 );
 
-// Connect MongoDB Database
-connectDB();
+// Connect MongoDB Database on startup
+if (process.env.MONGO_URI) {
+  connectDB().catch((err) => {
+    console.error('Initial DB connection attempt failed:', err.message);
+  });
+}
+
+// Request-level connection check (vital for Vercel Serverless Function cold starts)
+app.use(async (req, res, next) => {
+  if (process.env.MONGO_URI && mongoose.connection.readyState !== 1) {
+    try {
+      await connectDB();
+    } catch (err) {
+      console.error('Serverless DB reconnect attempt failed:', err.message);
+    }
+  }
+  next();
+});
 
 // Production Health Check Endpoint
 app.get('/api/health', (req, res) => {
@@ -57,11 +73,13 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     message: 'CA Setu API Gateway Operational',
     database: isDbConnected ? 'connected' : 'disconnected',
+    databaseHost: isDbConnected ? mongoose.connection.host : null,
     databaseState: isDbConnected
       ? 'MongoDB Atlas Connected'
-      : 'Running with fallback persistence (Provide MONGO_URI to connect Atlas)',
+      : 'Running with fallback persistence (Provide MONGO_URI in Vercel to connect Atlas)',
+    environment: process.env.NODE_ENV || 'production',
+    serverless: !!process.env.VERCEL,
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
   });
 });
 
@@ -74,11 +92,14 @@ app.use('/api/admin', adminRoutes);
 // Centralized Error Handling Middleware
 app.use(errorHandler);
 
-const server = app.listen(PORT, () => {
-  console.log(`\n======================================================`);
-  console.log(`🚀 [CA Setu Server] Running on Port ${PORT}`);
-  console.log(`🎯 [Status] Ready to accept API requests from Client`);
-  console.log(`======================================================\n`);
-});
+// Start standalone server only when run locally (NOT in Vercel Serverless Function environment)
+if (!process.env.VERCEL && process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`\n======================================================`);
+    console.log(`🚀 [CA Setu Server] Running on Port ${PORT}`);
+    console.log(`🎯 [Status] Ready to accept API requests from Client`);
+    console.log(`======================================================\n`);
+  });
+}
 
 export default app;

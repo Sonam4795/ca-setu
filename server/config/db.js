@@ -1,21 +1,50 @@
 import mongoose from 'mongoose';
 
+/**
+ * Global is used here to maintain a cached connection across hot-reloads
+ * in development and serverless function executions in production (Vercel).
+ */
+let cached = global.mongoose;
+
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
+}
+
 export async function connectDB() {
   const mongoURI = process.env.MONGO_URI;
 
   if (!mongoURI) {
-    console.warn('\n⚠️ [CA Setu Backend] MONGO_URI is not defined in environment variables.');
-    console.warn('ℹ️ Running backend with in-memory / fallback mock persistence. Provide MONGO_URI in .env to connect live MongoDB.\n');
-    return false;
+    console.warn('⚠️ [CA Setu Backend] MONGO_URI is not set in environment variables.');
+    return null;
+  }
+
+  // If connection already established, return cached connection
+  if (cached.conn && mongoose.connection.readyState === 1) {
+    return cached.conn;
+  }
+
+  // If a connection promise is in progress, await it
+  if (!cached.promise) {
+    const opts = {
+      bufferCommands: false, // Disable Mongoose buffering for serverless
+      maxPoolSize: 10,       // Maintain up to 10 socket connections
+      serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+      socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+    };
+
+    console.log('🔄 Connecting to MongoDB Atlas...');
+    cached.promise = mongoose.connect(mongoURI, opts).then((mongooseInstance) => {
+      console.log(`✅ [MongoDB Connected] Database Host: ${mongooseInstance.connection.host}`);
+      return mongooseInstance;
+    });
   }
 
   try {
-    const conn = await mongoose.connect(mongoURI);
-    console.log(`✅ [MongoDB Connected] Database Host: ${conn.connection.host}`);
-    return true;
+    cached.conn = await cached.promise;
+    return cached.conn;
   } catch (error) {
+    cached.promise = null;
     console.error(`❌ [MongoDB Connection Error]: ${error.message}`);
-    console.warn('ℹ️ The backend will continue operating gracefully.\n');
-    return false;
+    return null;
   }
 }
