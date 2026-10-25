@@ -40,3 +40,6 @@ Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
+
+client/test-*.js
+*.test.js
